@@ -1,18 +1,18 @@
 //! A library for interacting with a serial-controlled device that supports mouse button simulation and movement.
 use bytes::BytesMut;
-use crossbeam_channel::{bounded, Sender, Receiver};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use memchr::{memchr, memchr2};
-use parking_lot::{Mutex, RwLock};
 use once_cell::sync::Lazy;
+use parking_lot::{Mutex, RwLock};
 use rustc_hash::FxHashMap;
-use serialport::SerialPort; 
+use serialport::SerialPort;
 use std::time::Instant;
 
 use std::{
-    io::{Write},
+    io::Write,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     thread,
     time::Duration,
@@ -74,12 +74,10 @@ impl MouseButtonStates {
     }
 }
 
-
-
 struct PendingCommand {
-     tx: Sender<String>,
-     tag: &'static str,
-     started: Instant,
+    tx: Sender<String>,
+    tag: &'static str,
+    started: Instant,
 }
 
 // ========================= Performance profiler (optional) =================
@@ -132,14 +130,14 @@ use profiler::Perf as PerformanceProfiler;
 struct PerformanceProfiler;
 #[cfg(not(feature = "profile"))]
 impl PerformanceProfiler {
-     #[inline(always)]
+    #[inline(always)]
     fn measure<F: FnOnce()>(_name: &'static str, f: F) {
-         f()
-     }
-     fn stats() -> FxHashMap<&'static str, FxHashMap<&'static str, f64>> {
-         FxHashMap::default()
-     }
-     pub fn prof(_tag: &'static str, _started: Instant) {}
+        f()
+    }
+    fn stats() -> FxHashMap<&'static str, FxHashMap<&'static str, f64>> {
+        FxHashMap::default()
+    }
+    pub fn prof(_tag: &'static str, _started: Instant) {}
 }
 
 // ================================ SerialPort ===============================
@@ -215,10 +213,10 @@ impl SerialPortWrap {
         self.writer = Some(thread::spawn(move || {
             let mut buf = Vec::<u8>::with_capacity(4096);
             while !stop_w.load(Ordering::Relaxed) {
-                    match rx.recv() {
+                match rx.recv() {
                     Ok(first) => {
                         let current_tag = first.tag;
-                        let started     = first.started;
+                        let started = first.started;
                         buf.clear();
                         buf.extend_from_slice(&first.data);
                         while let Ok(pk) = rx.try_recv() {
@@ -242,7 +240,6 @@ impl SerialPortWrap {
         let pending_r = self.pending.clone();
         let button_cb_r = self.button_cb.clone();
         self.reader = Some(thread::spawn(move || {
-            
             reader_loop(&mut *rport, stop_r, pending_r, button_cb_r);
         }));
 
@@ -252,79 +249,96 @@ impl SerialPortWrap {
     pub fn close(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
 
-        
         if let Some(ser) = &mut self.ser {
             let _ = ser.set_timeout(Duration::from_millis(20));
         }
         if let Some(h) = &self.tx {
-             let _ = h.queue.try_send(Packet {
-                 data: Vec::new(),
-                 tag: "",
-                 started: Instant::now(),
-                 tracked_id: None,
-             });
-         }
+            let _ = h.queue.try_send(Packet {
+                data: Vec::new(),
+                tag: "",
+                started: Instant::now(),
+                tracked_id: None,
+            });
+        }
 
-        if let Some(h) = self.reader.take() { let _ = h.join(); }
-        if let Some(h) = self.writer.take() { let _ = h.join(); }
+        if let Some(h) = self.reader.take() {
+            let _ = h.join();
+        }
+        if let Some(h) = self.writer.take() {
+            let _ = h.join();
+        }
 
         self.ser = None;
 
-        
         for (_, pc) in self.pending.lock().drain() {
             let _ = pc.tx.send("Port closed".into());
         }
     }
 
+    #[inline]
+    pub fn is_open(&self) -> bool {
+        self.ser.is_some()
+    }
 
-    #[inline] pub fn is_open(&self) -> bool { self.ser.is_some() }
-
-    #[inline] fn next_id(&self) -> u32 {
+    #[inline]
+    fn next_id(&self) -> u32 {
         self.cmd_id.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
     }
 
     fn enqueue_ff(&self, packet: Packet) -> MakcuResult<()> {
-         self.tx
-             .as_ref()
-             .ok_or_else(|| MakcuError::Connection("Port not open".into()))
-             .map(|h| h.send(packet))
+        self.tx
+            .as_ref()
+            .ok_or_else(|| MakcuError::Connection("Port not open".into()))
+            .map(|h| h.send(packet))
     }
 
     pub fn send_ff(&self, payload: &str) -> MakcuResult<()> {
-        if DEBUG_IO { println!(">> {payload}"); }
+        if DEBUG_IO {
+            println!(">> {payload}");
+        }
         let mut v = Vec::with_capacity(payload.len() + 2);
         v.extend_from_slice(payload.as_bytes());
         v.extend_from_slice(CRLF.as_bytes());
         {
             let mut log = SENT_LOG.lock();
-            if log.len() == LOG_MAX { log.pop_front(); }
+            if log.len() == LOG_MAX {
+                log.pop_front();
+            }
             log.push_back(payload.as_bytes().to_vec());
-            
         }
-        self.enqueue_ff(Packet{
-             data: v,
-             tag: "move",           
-             started: Instant::now(),
-             tracked_id: None,
+        self.enqueue_ff(Packet {
+            data: v,
+            tag: "move",
+            started: Instant::now(),
+            tracked_id: None,
         })
     }
 
     pub fn send_tracked(&self, payload: &str, timeout_s: f32) -> MakcuResult<String> {
         let started = Instant::now();
         let tag = "serial";
-        {                           
+        {
             let mut log = SENT_LOG.lock();
-            if log.len()==LOG_MAX { log.pop_front(); }
+            if log.len() == LOG_MAX {
+                log.pop_front();
+            }
             log.push_back(payload.as_bytes().to_vec());
         }
         let cid = self.next_id();
         let (tx, rx) = bounded::<String>(1);
-        self.pending.lock().insert(cid, PendingCommand { tx, tag, started });
+        self.pending
+            .lock()
+            .insert(cid, PendingCommand { tx, tag, started });
 
         let mut v = Vec::with_capacity(payload.len() + 16);
         v.extend_from_slice(payload.as_bytes());
         v.extend_from_slice(format!("#{cid}{CRLF}").as_bytes());
-        self.enqueue_ff(Packet { data: v, tag, started, tracked_id: Some(cid) })?;
+        self.enqueue_ff(Packet {
+            data: v,
+            tag,
+            started,
+            tracked_id: Some(cid),
+        })?;
 
         match rx.recv_timeout(Duration::from_secs_f32(timeout_s)) {
             Ok(resp) => Ok(resp),
@@ -359,7 +373,6 @@ fn reader_loop(
         match ser.read(&mut tmp) {
             Ok(0) => continue,
             Ok(n) => {
-                
                 if n == 1 && tmp[0] < 32 && tmp[0] != b'\r' && tmp[0] != b'\n' {
                     if let Some(cb) = &*button_cb.read() {
                         cb(MouseButtonStates::from_mask(tmp[0]));
@@ -369,8 +382,12 @@ fn reader_loop(
                 buf.extend_from_slice(&tmp[..n]);
                 while let Some(pos) = memchr(b'\n', &buf) {
                     let mut line = buf.split_to(pos + 1);
-                    if line.ends_with(b"\n") { line.truncate(line.len() - 1); }
-                    if line.ends_with(b"\r") { line.truncate(line.len() - 1); }
+                    if line.ends_with(b"\n") {
+                        line.truncate(line.len() - 1);
+                    }
+                    if line.ends_with(b"\r") {
+                        line.truncate(line.len() - 1);
+                    }
                     if !line.is_empty() {
                         handle_line_bytes(&line, &pending);
                     }
@@ -384,7 +401,9 @@ fn reader_loop(
 #[inline]
 fn handle_line_bytes(line: &[u8], pending: &Mutex<FxHashMap<u32, PendingCommand>>) {
     if DEBUG_IO {
-        if let Ok(s) = std::str::from_utf8(line) { println!("<< {s}"); }
+        if let Ok(s) = std::str::from_utf8(line) {
+            println!("<< {s}");
+        }
     }
 
     if let Some(hash) = memchr(b'#', line) {
@@ -395,7 +414,7 @@ fn handle_line_bytes(line: &[u8], pending: &Mutex<FxHashMap<u32, PendingCommand>
             {
                 if let Some(pc) = pending.lock().remove(&cid) {
                     let dt = pc.started.elapsed();
-                    PerformanceProfiler::prof(pc.tag, pc.started); 
+                    PerformanceProfiler::prof(pc.tag, pc.started);
                     let payload =
                         String::from_utf8_lossy(&line[hash + 1 + colon + 1..]).into_owned();
                     let _ = pc.tx.send(payload);
@@ -405,21 +424,23 @@ fn handle_line_bytes(line: &[u8], pending: &Mutex<FxHashMap<u32, PendingCommand>
         }
     }
 
-   
     if pending.lock().is_empty() {
-        return;                      
+        return;
     }
 
-    
     let payload = if line.starts_with(b">>>") {
         let mut p = &line[3..];
-        if p.first() == Some(&b' ') { p = &p[1..]; }
+        if p.first() == Some(&b' ') {
+            p = &p[1..];
+        }
         p
     } else {
         line
     };
 
-    if SENT_LOG.lock().iter().any(|cmd| cmd.as_slice()==payload) { return; }
+    if SENT_LOG.lock().iter().any(|cmd| cmd.as_slice() == payload) {
+        return;
+    }
 
     let mut pend = pending.lock();
     if let Some((&cid, _)) = pend.iter().next() {
@@ -440,62 +461,65 @@ impl<'a> Batch<'a> {
     }
 
     #[inline(always)]
-   fn btn_name(btn: MouseButton) -> &'static str {
-       match btn {
-           MouseButton::Left   => "left",
-           MouseButton::Right  => "right",
-           MouseButton::Middle => "middle",
-           MouseButton::Side1  => "ms1",
-           MouseButton::Side2  => "ms2",
-       }
-   }
+    fn btn_name(btn: MouseButton) -> &'static str {
+        match btn {
+            MouseButton::Left => "left",
+            MouseButton::Right => "right",
+            MouseButton::Middle => "middle",
+            MouseButton::Side1 => "ms1",
+            MouseButton::Side2 => "ms2",
+        }
+    }
 
-    pub fn move_rel(mut self, dx:i32, dy:i32) -> Self {
+    pub fn move_rel(mut self, dx: i32, dy: i32) -> Self {
         Self::mark("move");
-        use std::fmt::Write; let _ = write!(self.buf,"km.move({dx},{dy}){CRLF}");
+        use std::fmt::Write;
+        let _ = write!(self.buf, "km.move({dx},{dy}){CRLF}");
         self
     }
-    pub fn click(mut self, btn:MouseButton) -> Self {
+    pub fn click(mut self, btn: MouseButton) -> Self {
         Self::mark("click");
         use std::fmt::Write;
-       let _ = write!(self.buf, "km.{}(){CRLF}", Self::btn_name(btn));
-       self
+        let _ = write!(self.buf, "km.{}(){CRLF}", Self::btn_name(btn));
+        self
     }
     pub fn press(mut self, btn: MouseButton) -> Self {
-       Self::mark("press");
-       use std::fmt::Write;
-       let _ = write!(self.buf, "km.{}(1){CRLF}", Self::btn_name(btn));
-       self
-   }
+        Self::mark("press");
+        use std::fmt::Write;
+        let _ = write!(self.buf, "km.{}(1){CRLF}", Self::btn_name(btn));
+        self
+    }
 
     pub fn release(mut self, btn: MouseButton) -> Self {
-       Self::mark("release");
-       use std::fmt::Write;
-       let _ = write!(self.buf, "km.{}(0){CRLF}", Self::btn_name(btn));
+        Self::mark("release");
+        use std::fmt::Write;
+        let _ = write!(self.buf, "km.{}(0){CRLF}", Self::btn_name(btn));
         self.buf.push_str(CRLF);
         self
     }
-    pub fn wheel(mut self, d:i32)->Self {
+    pub fn wheel(mut self, d: i32) -> Self {
         Self::mark("wheel");
-        use std::fmt::Write;  let _ = write!(self.buf, "km.wheel({d}){CRLF}");
+        use std::fmt::Write;
+        let _ = write!(self.buf, "km.wheel({d}){CRLF}");
         self
     }
-    pub fn run(self) -> MakcuResult<()> {           
+    pub fn run(self) -> MakcuResult<()> {
         Ok(PerformanceProfiler::measure("batch", || {
-           
             let _ = self.dev.send_ff(&self.buf);
         }))
     }
 }
 
-
 #[cfg(not(feature = "async"))]
-pub struct DeviceAsync; 
+pub struct DeviceAsync;
 
 #[cfg(not(feature = "async"))]
 impl DeviceAsync {
     pub async fn new(_: &str, _: u32) -> std::io::Result<Self> {
-        Err(std::io::Error::new(std::io::ErrorKind::Other, "async not enabled"))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "async not enabled",
+        ))
     }
 }
 
@@ -510,7 +534,9 @@ impl DeviceAsync {
     pub async fn new(port: &str, baud: u32) -> std::io::Result<Self> {
         use tokio_serial::SerialPortBuilderExt;
         let stream = tokio_serial::new(port, baud).open_native_async()?;
-        Ok(Self { inner: tokio::sync::Mutex::new(stream) })
+        Ok(Self {
+            inner: tokio::sync::Mutex::new(stream),
+        })
     }
 
     /* ---------- низкоуровневый raw‑write ---------- */
@@ -525,9 +551,9 @@ impl DeviceAsync {
     #[inline(always)]
     fn btn_name(btn: MouseButton) -> &'static str {
         match btn {
-            MouseButton::Left  => "left",
+            MouseButton::Left => "left",
             MouseButton::Right => "right",
-            MouseButton::Middle=> "middle",
+            MouseButton::Middle => "middle",
             MouseButton::Side1 => "ms1",
             MouseButton::Side2 => "ms2",
         }
@@ -546,12 +572,14 @@ impl DeviceAsync {
 
     pub async fn press(&self, btn: MouseButton) -> std::io::Result<()> {
         PerformanceProfiler::measure("press_async", || {});
-        self.send_raw(&format!("km.{}(1){CRLF}", Self::btn_name(btn))).await
+        self.send_raw(&format!("km.{}(1){CRLF}", Self::btn_name(btn)))
+            .await
     }
 
     pub async fn release(&self, btn: MouseButton) -> std::io::Result<()> {
         PerformanceProfiler::measure("release_async", || {});
-        self.send_raw(&format!("km.{}(0){CRLF}", Self::btn_name(btn))).await
+        self.send_raw(&format!("km.{}(0){CRLF}", Self::btn_name(btn)))
+            .await
     }
 
     pub async fn click(&self, btn: MouseButton) -> std::io::Result<()> {
@@ -562,7 +590,10 @@ impl DeviceAsync {
 
     /* ---------- пакетная отправка ---------- */
     pub fn batch(&self) -> AsyncBatch<'_> {
-        AsyncBatch { dev: self, buf: String::new() }
+        AsyncBatch {
+            dev: self,
+            buf: String::new(),
+        }
     }
 }
 
@@ -576,38 +607,48 @@ pub struct AsyncBatch<'a> {
 
 #[cfg(feature = "async")]
 impl<'a> AsyncBatch<'a> {
-    #[inline(always)] fn mark(op: &'static str){ PerformanceProfiler::measure(op, ||{}) }
-    #[inline(always)] fn btn(btn: MouseButton)->&'static str{ DeviceAsync::btn_name(btn) }
+    #[inline(always)]
+    fn mark(op: &'static str) {
+        PerformanceProfiler::measure(op, || {})
+    }
+    #[inline(always)]
+    fn btn(btn: MouseButton) -> &'static str {
+        DeviceAsync::btn_name(btn)
+    }
 
-    pub fn move_rel(mut self, dx:i32, dy:i32)->Self{
+    pub fn move_rel(mut self, dx: i32, dy: i32) -> Self {
         Self::mark("move_async");
-        use core::fmt::Write; let _=write!(self.buf,"km.move({dx},{dy}){CRLF}");
+        use core::fmt::Write;
+        let _ = write!(self.buf, "km.move({dx},{dy}){CRLF}");
         self
     }
-    pub fn wheel  (mut self, d:i32)->Self{
+    pub fn wheel(mut self, d: i32) -> Self {
         Self::mark("wheel_async");
-        use core::fmt::Write; let _=write!(self.buf,"km.wheel({d}){CRLF}");
+        use core::fmt::Write;
+        let _ = write!(self.buf, "km.wheel({d}){CRLF}");
         self
     }
-    pub fn press  (mut self, b:MouseButton)->Self{
+    pub fn press(mut self, b: MouseButton) -> Self {
         Self::mark("press_async");
-        self.buf.push_str(&format!("km.{}(1){CRLF}", Self::btn(b))); self
+        self.buf.push_str(&format!("km.{}(1){CRLF}", Self::btn(b)));
+        self
     }
-    pub fn release(mut self, b:MouseButton)->Self{
+    pub fn release(mut self, b: MouseButton) -> Self {
         Self::mark("release_async");
-        self.buf.push_str(&format!("km.{}(0){CRLF}", Self::btn(b))); self
+        self.buf.push_str(&format!("km.{}(0){CRLF}", Self::btn(b)));
+        self
     }
-    pub fn click  (mut self, b:MouseButton)->Self{
+    pub fn click(mut self, b: MouseButton) -> Self {
         Self::mark("click_async");
-        self.buf.push_str(&format!("km.{}(){CRLF}",   Self::btn(b))); self
+        self.buf.push_str(&format!("km.{}(){CRLF}", Self::btn(b)));
+        self
     }
 
     pub async fn run(self) -> std::io::Result<()> {
-        PerformanceProfiler::measure("batch_async", ||{});
+        PerformanceProfiler::measure("batch_async", || {});
         self.dev.send_raw(&self.buf).await
     }
 }
-
 
 // ================================ Device ===================================
 
@@ -620,13 +661,23 @@ pub struct Device {
 }
 
 #[derive(Clone, Copy)]
-pub enum MouseButton { Left, Right, Middle, Side1, Side2 }
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+    Side1,
+    Side2,
+}
 
 impl Device {
-    pub fn batch(&self)->Batch { Batch { dev:self, buf:String::new() } }
+    pub fn batch(&self) -> Batch {
+        Batch {
+            dev: self,
+            buf: String::new(),
+        }
+    }
     pub fn new(port: impl Into<String>, baud: u32, timeout: Duration) -> Self {
         Self {
-            
             sp: Arc::new(Mutex::new(SerialPortWrap::new(port, baud, timeout))),
             connected: Arc::new(AtomicBool::new(false)),
             lock_valid: Arc::new(AtomicBool::new(false)),
@@ -641,7 +692,9 @@ impl Device {
         self.connected.store(true, Ordering::Release);
 
         let cache = self.btn_cache.clone();
-        self.sp.lock().set_button_callback(Some(move |st| *cache.lock() = st));
+        self.sp
+            .lock()
+            .set_button_callback(Some(move |st| *cache.lock() = st));
         self.send_ff("km.buttons(1)")
     }
 
@@ -656,23 +709,21 @@ impl Device {
         PerformanceProfiler::measure("click", || {
             let suffix = if down { "(1)" } else { "(0)" };
             let cmd = match btn {
-                MouseButton::Left   => "km.left",
-                MouseButton::Right  => "km.right",
+                MouseButton::Left => "km.left",
+                MouseButton::Right => "km.right",
                 MouseButton::Middle => "km.middle",
-                MouseButton::Side1  => "km.ms1",
-                MouseButton::Side2  => "km.ms2",
+                MouseButton::Side1 => "km.ms1",
+                MouseButton::Side2 => "km.ms2",
             };
             let _ = self.send_ff(&format!("{cmd}{suffix}"));
-            });
+        });
         Ok(())
     }
-    
 
     /* ---- lock‑helpers ---- */
     fn send_lock(&self, short: &str, lock: bool) -> MakcuResult<()> {
-        self.send_ff(&format!("km.lock_{short}({})", if lock {1} else {0}))
+        self.send_ff(&format!("km.lock_{short}({})", if lock { 1 } else { 0 }))
     }
-
 
     pub fn set_button_callback<F>(&self, cb: Option<F>)
     where
@@ -682,15 +733,16 @@ impl Device {
         let sp = self.sp.lock();
         if let Some(user_cb) = cb {
             sp.set_button_callback(Some(move |st| {
-                *cache.lock() = st;     
-                user_cb(st);            
+                *cache.lock() = st;
+                user_cb(st);
             }));
         } else {
             sp.set_button_callback(None::<fn(MouseButtonStates)>);
         }
     }
 
-    #[inline] fn ensure(&self) -> MakcuResult<()> {
+    #[inline]
+    fn ensure(&self) -> MakcuResult<()> {
         if self.connected.load(Ordering::Acquire) && self.sp.lock().is_open() {
             Ok(())
         } else {
@@ -698,17 +750,16 @@ impl Device {
         }
     }
 
-    #[inline] fn send_ff(&self, cmd: &str) -> MakcuResult<()> {
+    #[inline]
+    fn send_ff(&self, cmd: &str) -> MakcuResult<()> {
         self.ensure()?;
         self.sp.lock().send_ff(cmd)
     }
-    #[inline] fn send_tr(&self, cmd: &str, t: f32) -> MakcuResult<String> {
+    #[inline]
+    fn send_tr(&self, cmd: &str, t: f32) -> MakcuResult<String> {
         self.ensure()?;
         self.sp.lock().send_tracked(cmd, t)
     }
-
-    
-
 
     // ====== API ======
     pub fn move_rel(&self, dx: i32, dy: i32) -> MakcuResult<()> {
@@ -717,51 +768,134 @@ impl Device {
         });
         Ok(())
     }
-    #[inline] fn btn(&self, name: &str, down: bool) -> MakcuResult<()> {
+    #[inline]
+    fn btn(&self, name: &str, down: bool) -> MakcuResult<()> {
         self.send_ff(&format!("km.{name}({})", if down { 1 } else { 0 }))
     }
 
-    pub fn press_left(&self) -> MakcuResult<()> { self.btn("left", true) }
-    pub fn release_left(&self) -> MakcuResult<()> { self.btn("left", false) }
-    pub fn press_right(&self) -> MakcuResult<()> { self.btn("right", true) }
-    pub fn release_right(&self) -> MakcuResult<()> { self.btn("right", false) }
-    pub fn press_middle(&self) -> MakcuResult<()> { self.btn("middle", true) }
-    pub fn release_middle(&self) -> MakcuResult<()> { self.btn("middle", false) }
+    pub fn press_left(&self) -> MakcuResult<()> {
+        self.btn("left", true)
+    }
+    pub fn release_left(&self) -> MakcuResult<()> {
+        self.btn("left", false)
+    }
+    pub fn press_right(&self) -> MakcuResult<()> {
+        self.btn("right", true)
+    }
+    pub fn release_right(&self) -> MakcuResult<()> {
+        self.btn("right", false)
+    }
+    pub fn press_middle(&self) -> MakcuResult<()> {
+        self.btn("middle", true)
+    }
+    pub fn release_middle(&self) -> MakcuResult<()> {
+        self.btn("middle", false)
+    }
 
-    pub fn click_left(&self) -> MakcuResult<()> { self.press_left()?; self.release_left() }
-    pub fn click_right(&self) -> MakcuResult<()> { self.press_right()?; self.release_right() }
+    pub fn click_left(&self) -> MakcuResult<()> {
+        self.press_left()?;
+        self.release_left()
+    }
+    pub fn click_right(&self) -> MakcuResult<()> {
+        self.press_right()?;
+        self.release_right()
+    }
 
-    pub fn press(&self, btn: MouseButton)  -> MakcuResult<()> { self.btn_cmd(btn, true)  }
-    pub fn release(&self, btn: MouseButton)-> MakcuResult<()> { self.btn_cmd(btn, false) }
-    pub fn click(&self, btn: MouseButton)  -> MakcuResult<()> { self.press(btn)?; self.release(btn) }
+    pub fn press(&self, btn: MouseButton) -> MakcuResult<()> {
+        self.btn_cmd(btn, true)
+    }
+    pub fn release(&self, btn: MouseButton) -> MakcuResult<()> {
+        self.btn_cmd(btn, false)
+    }
+    pub fn click(&self, btn: MouseButton) -> MakcuResult<()> {
+        self.press(btn)?;
+        self.release(btn)
+    }
+
+    fn query_button_state<F>(&self, cmd: &str, mut access: F) -> MakcuResult<bool>
+    where
+        F: FnMut(&mut MouseButtonStates) -> &mut bool,
+    {
+        let resp = self.send_tr(cmd, 0.5)?;
+        let trimmed = resp.trim();
+        if let Some(value) = trimmed
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u8>()
+            .ok()
+        {
+            let pressed = value != 0;
+            let mut cache = self.btn_cache.lock();
+            *access(&mut cache) = pressed;
+            return Ok(pressed);
+        }
+
+        if DEBUG_IO {
+            eprintln!("{cmd} unexpected payload: {trimmed}");
+        }
+        let mut cache = self.btn_cache.lock();
+        Ok(*access(&mut cache))
+    }
+
+    /// Queries Makcu for the current left-button state (1/2 => down, 0 => up).
+    pub fn left(&self) -> MakcuResult<bool> {
+        self.query_button_state("km.left()", |st| &mut st.left)
+    }
+
+    /// Queries Makcu for the current right-button state (1/2 => down, 0 => up).
+    pub fn right(&self) -> MakcuResult<bool> {
+        self.query_button_state("km.right()", |st| &mut st.right)
+    }
+
+    /// Queries Makcu for the current middle-button state.
+    pub fn middle(&self) -> MakcuResult<bool> {
+        self.query_button_state("km.middle()", |st| &mut st.middle)
+    }
 
     /* --------- колёсико -------- */
     pub fn wheel(&self, delta: i32) -> MakcuResult<()> {
-        PerformanceProfiler::measure("wheel", ||
-            { self.send_ff(&format!("km.wheel({delta})")).ok(); }
-        );
+        PerformanceProfiler::measure("wheel", || {
+            self.send_ff(&format!("km.wheel({delta})")).ok();
+        });
         Ok(())
     }
 
     /* --------- блокировки ------ */
-    pub fn lock_mouse_x(&self, lock: bool) -> MakcuResult<()> { self.send_lock("mx", lock) }
-    pub fn lock_mouse_y(&self, lock: bool) -> MakcuResult<()> { self.send_lock("my", lock) }
-    pub fn lock_left     (&self, lock: bool) -> MakcuResult<()> { self.send_lock("ml", lock) }
-    pub fn lock_right    (&self, lock: bool) -> MakcuResult<()> { self.send_lock("mr", lock) }
-    pub fn lock_middle   (&self, lock: bool) -> MakcuResult<()> { self.send_lock("mm", lock) }
-    pub fn lock_side1    (&self, lock: bool) -> MakcuResult<()> { self.send_lock("ms1", lock) }
-    pub fn lock_side2    (&self, lock: bool) -> MakcuResult<()> { self.send_lock("ms2", lock) }
+    pub fn lock_mouse_x(&self, lock: bool) -> MakcuResult<()> {
+        self.send_lock("mx", lock)
+    }
+    pub fn lock_mouse_y(&self, lock: bool) -> MakcuResult<()> {
+        self.send_lock("my", lock)
+    }
+    pub fn lock_left(&self, lock: bool) -> MakcuResult<()> {
+        self.send_lock("ml", lock)
+    }
+    pub fn lock_right(&self, lock: bool) -> MakcuResult<()> {
+        self.send_lock("mr", lock)
+    }
+    pub fn lock_middle(&self, lock: bool) -> MakcuResult<()> {
+        self.send_lock("mm", lock)
+    }
+    pub fn lock_side1(&self, lock: bool) -> MakcuResult<()> {
+        self.send_lock("ms1", lock)
+    }
+    pub fn lock_side2(&self, lock: bool) -> MakcuResult<()> {
+        self.send_lock("ms2", lock)
+    }
 
     pub fn set_serial(&self, v: &str) -> MakcuResult<String> {
-        let arg = if v.is_empty() { "0".into() }
-                  else { format!("'{}'", v.replace('\'', "\\'")) };
+        let arg = if v.is_empty() {
+            "0".into()
+        } else {
+            format!("'{}'", v.replace('\'', "\\'"))
+        };
         self.send_tr(&format!("km.serial({arg})"), 1.0)
     }
 
     pub fn profiler_stats() -> FxHashMap<&'static str, FxHashMap<&'static str, f64>> {
         PerformanceProfiler::stats()
     }
-
 }
 // ============================ MockSerial (optional) ========================
 #[cfg(feature = "mockserial")]
@@ -812,6 +946,8 @@ pub mod mockserial {
             }
             Ok(buf.len())
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }
